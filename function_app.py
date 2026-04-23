@@ -3,12 +3,11 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import azure.functions as func
 from azure.core.exceptions import ResourceExistsError
-from azure.storage.blob import BlobSasPermissions, BlobServiceClient, generate_blob_sas
+from azure.storage.blob import BlobServiceClient
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
@@ -28,16 +27,6 @@ def _get_connection_string() -> str:
     if not conn_str:
         raise ValueError("Storage connection string is not configured.")
     return conn_str
-
-
-def _parse_connection_string(connection_string: str) -> dict:
-    items = {}
-    for part in connection_string.split(";"):
-        if not part or "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        items[key] = value
-    return items
 
 
 def _parse_first_uploaded_file(req: func.HttpRequest) -> tuple[str, bytes]:
@@ -126,54 +115,3 @@ def upload(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as exc:
         logging.exception("Upload failed")
         return _json_response({"error": f"Upload failed: {exc}"}, status_code=500)
-
-
-@app.route(route="download", methods=["GET"])
-def download(req: func.HttpRequest) -> func.HttpResponse:
-    filename = req.params.get("filename")
-    if not filename:
-        return _json_response(
-            {"error": "Query parameter 'filename' is required."}, status_code=400
-        )
-
-    try:
-        connection_string = _get_connection_string()
-        service_client = BlobServiceClient.from_connection_string(connection_string)
-        container_client = service_client.get_container_client(CONTAINER_NAME)
-        blob_client = container_client.get_blob_client(filename)
-
-        if not blob_client.exists():
-            return _json_response({"error": "File not found."}, status_code=404)
-
-        conn_parts = _parse_connection_string(connection_string)
-        account_name = conn_parts.get("AccountName")
-        account_key = conn_parts.get("AccountKey")
-        if not account_name or not account_key:
-            raise ValueError(
-                "Connection string must include AccountName and AccountKey."
-            )
-
-        expires_on = datetime.now(timezone.utc) + timedelta(minutes=15)
-        sas_token = generate_blob_sas(
-            account_name=account_name,
-            container_name=CONTAINER_NAME,
-            blob_name=filename,
-            account_key=account_key,
-            permission=BlobSasPermissions(read=True),
-            expiry=expires_on,
-        )
-
-        return _json_response(
-            {
-                "filename": filename,
-                "downloadUrl": f"{blob_client.url}?{sas_token}",
-                "expiresInMinutes": 15,
-            }
-        )
-    except ValueError as exc:
-        return _json_response({"error": str(exc)}, status_code=400)
-    except Exception as exc:
-        logging.exception("Download URL generation failed")
-        return _json_response(
-            {"error": f"Download URL generation failed: {exc}"}, status_code=500
-        )
